@@ -14,53 +14,18 @@ from src.entity.artifact import TextArtifact, ImageArtifact, OCRArtifact, AudioA
 from src.utils import generate_unique_filename, create_directories
 import sys
 
-class ContentModularization:
-    def __init__(self):
+class TextClassifier:
+    def __init__(self, text_config: TextConfig):
         try:
-            self.content_config = ContentConfig()
-            self.text_config = TextConfig(content_config=self.content_config)
-            self.image_config = ImageConfig(content_config=self.content_config)
-            self.ocr_config = OCRConfig(content_config=self.content_config)
-            self.audio_config = AudioConfig(content_config=self.content_config)
-            self.video_config = VideoConfig(content_config=self.content_config)
-            
-            # Initialize models
-            self._initialize_models()
-            
-            # Create necessary directories
-            create_directories([
-                self.text_config.results_dir,
-                self.image_config.results_dir,
-                self.ocr_config.results_dir,
-                self.audio_config.results_dir,
-                self.video_config.results_dir
-            ])
-            
-        except Exception as e:
-            raise CustomException(e, sys)
-
-    def _initialize_models(self):
-        """Initialize all ML models"""
-        try:
-            # Text classifier
+            self.text_config = text_config
+            # Initialize text model
             self.tokenizer = AutoTokenizer.from_pretrained(self.text_config.model_name)
             self.text_model = AutoModelForSequenceClassification.from_pretrained(self.text_config.model_name).eval()
             
-            # Image classifier
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.img_model = timm.create_model(self.image_config.model_name, pretrained=True).eval().to(self.device)
-            cfg = timm.data.resolve_model_data_config(self.img_model)
-            self.img_transforms = timm.data.create_transform(**cfg, is_training=False)
-            self.img_labels = self.img_model.pretrained_cfg["label_names"]
+            # Create directory
+            create_directories([self.text_config.results_dir])
             
-            # ASR model
-            self.asr = whisper.load_model(self.audio_config.model_name)
-            
-            # OCR reader
-            self.ocr_reader = easyocr.Reader(self.ocr_config.languages, gpu=torch.cuda.is_available())
-            
-            logging.info("All models initialized successfully")
-            
+            logging.info("TextClassifier initialized")
         except Exception as e:
             raise CustomException(e, sys)
 
@@ -87,6 +52,24 @@ class ContentModularization:
             
         except Exception as e:
             logging.error(f"Error in text classification: {e}")
+            raise CustomException(e, sys)
+
+class ImageClassifier:
+    def __init__(self, image_config: ImageConfig):
+        try:
+            self.image_config = image_config
+            # Initialize image model
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.img_model = timm.create_model(self.image_config.model_name, pretrained=True).eval().to(self.device)
+            cfg = timm.data.resolve_model_data_config(self.img_model)
+            self.img_transforms = timm.data.create_transform(**cfg, is_training=False)
+            self.img_labels = self.img_model.pretrained_cfg["label_names"]
+            
+            # Create directory
+            create_directories([self.image_config.results_dir])
+            
+            logging.info("ImageClassifier initialized")
+        except Exception as e:
             raise CustomException(e, sys)
 
     def classify_image(self, image_path: str) -> ImageArtifact:
@@ -117,15 +100,29 @@ class ContentModularization:
             logging.error(f"Error in image classification: {e}")
             raise CustomException(e, sys)
 
-    def extract_text_from_image(self, image_path: str) -> OCRArtifact:
+class OCRProcessor:
+    def __init__(self, ocr_config: OCRConfig):
+        try:
+            self.ocr_config = ocr_config
+            # Initialize OCR model
+            self.ocr_reader = easyocr.Reader(self.ocr_config.languages, gpu=torch.cuda.is_available())
+            
+            # Create directory
+            create_directories([self.ocr_config.results_dir])
+            
+            logging.info("OCRProcessor initialized")
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def extract_text_from_image(self, image_path: str, text_classifier: TextClassifier) -> OCRArtifact:
         try:
             logging.info(f"Extracting text from image: {image_path}")
             
             results = self.ocr_reader.readtext(image_path, detail=0)
             extracted_text = " ".join(results)
             
-            # Classify extracted text
-            text_artifact = self.classify_text(extracted_text)
+            # Classify extracted text using provided text_classifier
+            text_artifact = text_classifier.classify_text(extracted_text)
             
             logging.info(f"OCR extraction completed. Text: {extracted_text[:50]}...")
             return OCRArtifact(
@@ -135,6 +132,52 @@ class ContentModularization:
             
         except Exception as e:
             logging.error(f"Error in OCR extraction: {e}")
+            raise CustomException(e, sys)
+
+class AudioTranscriber:
+    def __init__(self, audio_config: AudioConfig):
+        try:
+            self.audio_config = audio_config
+            # Initialize ASR model
+            self.asr = whisper.load_model(self.audio_config.model_name)
+            
+            # Create directory
+            create_directories([self.audio_config.results_dir])
+            
+            logging.info("AudioTranscriber initialized")
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def transcribe_audio(self, audio_path: str, text_classifier: TextClassifier) -> AudioArtifact:
+        try:
+            logging.info(f"Transcribing audio: {audio_path}")
+            
+            result = self.asr.transcribe(audio_path)
+            transcript = result["text"]
+            
+            # Classify transcript using provided text_classifier
+            text_artifact = text_classifier.classify_text(transcript)
+            
+            logging.info(f"Audio transcription completed. Text: {transcript[:50]}...")
+            return AudioArtifact(
+                transcript=transcript,
+                transcript_classification=text_artifact.classification_result
+            )
+            
+        except Exception as e:
+            logging.error(f"Error in audio transcription: {e}")
+            raise CustomException(e, sys)
+
+class VideoProcessor:
+    def __init__(self, video_config: VideoConfig):
+        try:
+            self.video_config = video_config
+            
+            # Create directory
+            create_directories([self.video_config.results_dir])
+            
+            logging.info("VideoProcessor initialized")
+        except Exception as e:
             raise CustomException(e, sys)
 
     def extract_audio(self, video_path: str, output_audio_path: str) -> str:
@@ -180,24 +223,4 @@ class ContentModularization:
             
         except Exception as e:
             logging.error(f"Error in frame extraction: {e}")
-            raise CustomException(e, sys)
-
-    def transcribe_audio(self, audio_path: str) -> AudioArtifact:
-        try:
-            logging.info(f"Transcribing audio: {audio_path}")
-            
-            result = self.asr.transcribe(audio_path)
-            transcript = result["text"]
-            
-            # Classify transcript
-            text_artifact = self.classify_text(transcript)
-            
-            logging.info(f"Audio transcription completed. Text: {transcript[:50]}...")
-            return AudioArtifact(
-                transcript=transcript,
-                transcript_classification=text_artifact.classification_result
-            )
-            
-        except Exception as e:
-            logging.error(f"Error in audio transcription: {e}")
             raise CustomException(e, sys)
